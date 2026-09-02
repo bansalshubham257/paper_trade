@@ -4,3 +4,7 @@ __pycache__/
 .idea/
 *.log
 .env
+node_modules/
+package.json
+package-lock.json
+railway.json
