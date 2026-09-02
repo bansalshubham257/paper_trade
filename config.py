@@ -9,6 +9,7 @@ class Config:
 
     # Upstox API configuration
     ACCESS_TOKE = os.getenv('ACCESS_TOKEN', '.eyJzdiOiIyWEJSUFMiLqdGkiOiI2NDFZjBjpZW50IjpmYWLOiJ1ZGFwaAiOjEMDB9.Ra7Bclq3ysxWNmi7oJol_1mcgz1sCK7WWgFG-59ZFmM')
+    ACCESS_TOKEN = os.getenv('ACCESS_TOKEN', ACCESS_TOKE)
     ACCESS_TOKEN2 = os.getenv('ACCESS_TOKEN2', 'eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ..Ra7Bclq3ysxWNmi7oJol_1mcgz1sCK7WWgFG-59ZFmM')
 
     # Other configurations

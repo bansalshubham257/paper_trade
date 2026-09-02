@@ -25,17 +25,54 @@ class DatabaseService:
     pivot_calculation_cache = {}
 
     def __init__(self, max_retries=3, retry_delay=2):
-        self.conn_params = {
-            'dbname': os.getenv('DB_NAME', 'your_db_name'),
-            'user': os.getenv('DB_USER', 'your_db_user'),
-            'password': os.getenv('DB_PASSWORD', 'your_db_password'),
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'port': os.getenv('DB_PORT', '5432')
-        }
+        self.conn_params = self._build_conn_params()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.session = requests.Session(impersonate="chrome110")
         print("databse init done")
+
+    def _build_conn_params(self):
+        """Build psycopg2 connection params.
+
+        Prefer the individual DB_* environment variables, otherwise fall back
+        to parsing the DATABASE_URL (postgresql://user:pass@host:port/dbname).
+        """
+        db_name = os.getenv('DB_NAME')
+        db_user = os.getenv('DB_USER')
+        db_password = os.getenv('DB_PASSWORD')
+        db_host = os.getenv('DB_HOST')
+        db_port = os.getenv('DB_PORT')
+        if db_name and db_user and db_password and db_host and db_port:
+            return {
+                'dbname': db_name,
+                'user': db_user,
+                'password': db_password,
+                'host': db_host,
+                'port': db_port,
+            }
+        dsn = os.getenv('DATABASE_URL', '').strip()
+        if dsn:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(dsn)
+            port = parsed.port or 5432
+            try:
+                dbname = parsed.path.lstrip('/')
+            except Exception:
+                dbname = 'railway'
+            return {
+                'dbname': dbname or 'railway',
+                'user': unquote(parsed.username) if parsed.username else 'postgres',
+                'password': unquote(parsed.password) if parsed.password else '',
+                'host': parsed.hostname or 'localhost',
+                'port': str(port),
+            }
+        return {
+            'dbname': 'your_db_name',
+            'user': 'your_db_user',
+            'password': 'your_db_password',
+            'host': 'localhost',
+            'port': '5432',
+        }
 
     def test_connection(self):
         """Test database connection"""
