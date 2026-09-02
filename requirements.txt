@@ -1,0 +1,35 @@
+flask
+flask-cors
+requests
+pandas
+gunicorn
+datetime
+numpy
+# redis removed
+ta
+scipy
+bokeh
+pytz
+# Database
+psycopg2-binary>=2.9.10
+python-dotenv==1.0.0
+flask-socketio==5.3.4
+python-socketio==5.8.0
+python-engineio==4.5.1
+fastapi>=0.95.2
+uvicorn>=0.22.0
+google-auth>=2.16.0
+flask_caching
+git+https://github.com/bretsky/yfinance.git@fix/curl-cffi-cookies
+#eventlet==0.33.3
+protobuf
+websockets
+pyotp==2.9.0
+selenium==4.15.2
+webdriver-manager==4.0.1
+psutil
+# ML and Data Analysis
+scikit-learn>=1.3.0
+joblib>=1.3.0
+# For live updates and data handling
+curl-cffi>=0.5.0
