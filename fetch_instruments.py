@@ -100,7 +100,8 @@ def upsert_instruments(rows):
                 expiry_date = pd.to_datetime(ed).date()
             strike = row.get("strike")
             strike_price = float(strike) if strike is not None and not pd.isna(strike) else None
-            option_type = str(row.get("option_type", "")).strip().upper() or None
+            ot = row.get("option_type")
+            option_type = (str(ot).strip().upper() or None) if ot is not None and not pd.isna(ot) else None
             instrument_type = str(row.get("instrument_type", "")).strip().upper()
             prev_close = row.get("last_price")
             prev_close = float(prev_close) if prev_close is not None and not pd.isna(prev_close) else None
