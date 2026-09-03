@@ -2903,6 +2903,35 @@ class DatabaseService:
             print(f"Error fetching instrument by key: {str(e)}")
             return None
 
+    def upsert_instrument_key(self, symbol, instrument_key, exchange, tradingsymbol,
+                              lot_size=None, instrument_type=None, expiry_date=None,
+                              strike_price=None, option_type=None, prev_close=None):
+        """Insert or update an instrument key row (unique on tradingsymbol+exchange)."""
+        try:
+            with self._get_cursor() as cur:
+                cur.execute("""
+                    INSERT INTO instrument_keys
+                        (symbol, instrument_key, exchange, tradingsymbol, lot_size,
+                         instrument_type, expiry_date, strike_price, option_type, prev_close)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (tradingsymbol, exchange) DO UPDATE SET
+                        symbol = EXCLUDED.symbol,
+                        instrument_key = EXCLUDED.instrument_key,
+                        lot_size = EXCLUDED.lot_size,
+                        instrument_type = EXCLUDED.instrument_type,
+                        expiry_date = EXCLUDED.expiry_date,
+                        strike_price = EXCLUDED.strike_price,
+                        option_type = EXCLUDED.option_type,
+                        prev_close = EXCLUDED.prev_close,
+                        last_updated = now()
+                """, (symbol, instrument_key, exchange, tradingsymbol,
+                      lot_size, instrument_type, expiry_date, strike_price,
+                      option_type, prev_close))
+                return True
+        except Exception as e:
+            print(f"Error upserting instrument key {tradingsymbol}: {str(e)}")
+            return False
+
     def get_option_instrument_key(self, symbol, expiry, strike, option_type):
         """Get option instrument key by symbol, expiry, strike and option type."""
         try:
