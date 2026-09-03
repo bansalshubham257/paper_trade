@@ -52,7 +52,7 @@ class UpstoxFeedWorker:
         self.market_close_time = "15:30"  # IST market close time
 
         # Connection settings - Updated for multiple connections
-        self.MAX_CONNECTIONS = 4  # Fixed number of connections (4)
+        self.MAX_CONNECTIONS = 2  # One connection per token/account to avoid Upstox per-credential connection limits
         self.MAX_KEYS_PER_CONNECTION = 1500  # Each connection handles max 1500 keys as per API limit
 
         # Increase connection delays to prevent rate limiting
