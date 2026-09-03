@@ -375,7 +375,10 @@ def fully_automated_auth_flow(api_key, secret, totp_secret, redirect_uri,
         try:
             # Initialize browser with Service object from ChromeDriverManager
             print("Launching browser...")
-            selenium_url = "standalone-chrome-production-121b.up.railway.app"
+            selenium_url = os.getenv("SELENIUM_URL", "standalone-chrome-production-121b.up.railway.app")
+            if selenium_url and not selenium_url.startswith("http://") and not selenium_url.startswith("https://"):
+                selenium_url = f"http://{selenium_url}:4444/wd/hub"
+            print(f"Connecting to Selenium at: {selenium_url}")
             #service = Service(ChromeDriverManager().install())
             driver = webdriver.Remote(command_executor=selenium_url, options=options)
         except Exception as browser_error:
