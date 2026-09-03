@@ -48,8 +48,8 @@ def get_market_data_feed_authorize_v3(bad_tokens=None):
         bad_tokens = set()
     # Load all tokens from DB and try them in order
     accounts = db_service.get_upstox_accounts()
-    # Try last used ID first, then all others
-    preferred_order = [5, 6, 4, 3, 2, 1]
+    # Worker is allocated account 5 only (feed uses 1-4, paper_trader uses 6)
+    preferred_order = [5]
     account_tokens = []
     for pid in preferred_order:
         for acc in accounts:

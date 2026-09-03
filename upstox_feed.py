@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import ssl
 import uuid
 from datetime import datetime
@@ -24,12 +25,19 @@ from functools import partial
 class UpstoxFeedWorker:
     def __init__(self, database_service):
         self.db = database_service
-        # Fetch all available access tokens from database
+        # FORCE_STREAM bypasses the market-hours gate (used for testing outside
+        # trading hours). Set FORCE_STREAM=1 on the feed service to force streaming.
+        self.force_stream = os.getenv('FORCE_STREAM', '0') == '1'
+        if self.force_stream:
+            print("FORCE_STREAM enabled: bypassing market-hours gate")
+        # Fetch access tokens for the feed's dedicated accounts only (1-4).
+        # Accounts 5 (worker) and 6 (paper_trader) are reserved for other services.
         self.access_tokens = []
         self.token_account_map = {}
+        feed_account_ids = {1, 2, 3, 4}
         accounts = self.db.get_upstox_accounts()
         for acc in accounts:
-            if acc.get('access_token'):
+            if acc.get('access_token') and acc['id'] in feed_account_ids:
                 token = acc['access_token']
                 self.access_tokens.append(token)
                 self.token_account_map[token] = acc['id']
@@ -146,7 +154,10 @@ class UpstoxFeedWorker:
         await self.run_feed()
 
     def is_market_open(self) -> bool:
-        """Check if the market is currently open based on config settings."""
+        """Check if the market is currently open based on config settings.
+        When FORCE_STREAM is enabled, always returns True for out-of-hours testing."""
+        if self.force_stream:
+            return True
         now = datetime.now(pytz.timezone('Asia/Kolkata'))
         current_time = now.time()
         current_weekday = now.weekday()

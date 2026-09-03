@@ -1,15 +1,15 @@
 """
 Standalone Recovery Trade Paper Trader
 =======================================
-Monitors the `options_orders` table (populated by worker.py via Upstox WebSocket
-feed) for recovery trades, and paper-trades them in real time during market hours.
+Monitors the `options_orders` table (populated by the Upstox WebSocket feed)
+for recovery trades, and paper-trades them in real time during market hours.
 
 CONCEPT
 -------
-A "recovery trade" is an options order that:
-  - has dropped below 25% or 50% of its stored LTP (`is_less_than_25pct` /
-    `is_less_than_50pct` = TRUE), AND
-  - has subsequently recovered to >= 33% return from its stored LTP.
+A "recovery trade" is any options order in `options_orders` that has a valid
+stored LTP and whose LIVE price has recovered to the trade thresholds. The
+paper trader computes recovery itself from stored vs live LTP (via Upstox REST
+/market-quote/ltp) -- it does NOT depend on the worker or its recovery flags.
 
 PAPER TRADING RULES (this file)
 -------------------------------
@@ -160,11 +160,12 @@ def wait_until_market_open():
 # UPSTOX LIVE PRICE FETCH
 # =============================================================================
 def get_access_token():
-    """Fetch a valid access token from upstox_accounts table."""
+    """Fetch a valid access token from upstox_accounts table.
+    Paper trader is allocated account 6 (feed uses 1-4, worker uses 5)."""
     try:
         row = _fetch_one("""
             SELECT access_token FROM upstox_accounts
-            WHERE access_token IS NOT NULL AND access_token != ''
+            WHERE id = 6 AND access_token IS NOT NULL AND access_token != ''
             ORDER BY id
             LIMIT 1
         """)
@@ -425,46 +426,45 @@ def process_once():
 
     # ---- EXIT CHECKS (for open paper trades) ----
     if open_trades:
-        # Fetch live prices for open trades via their instrument keys
-        open_keys_to_fetch = []
-        for t in open_trades:
-            sym, strike, opt = t['source_symbol'], t['source_strike_price'], t['source_option_type']
-            ik = _fetch_one("""
-                SELECT instrument_key FROM instrument_keys
-                WHERE symbol=%s AND strike_price=%s AND option_type=%s
-                LIMIT 1
-            """, (sym, strike, opt))
-            if ik and ik[0]:
-                open_keys_to_fetch.append(ik[0])
-        if open_keys_to_fetch:
-            open_ltp_map = fetch_live_ltp(open_keys_to_fetch)
-            for t in open_trades:
-                sym, strike, opt = t['source_symbol'], t['source_strike_price'], t['source_option_type']
-                ik = _fetch_one("""
-                    SELECT instrument_key FROM instrument_keys
-                    WHERE symbol=%s AND strike_price=%s AND option_type=%s
-                    LIMIT 1
-                """, (sym, strike, opt))
-                ik_val = ik[0] if ik else None
-                current_ltp = open_ltp_map.get(ik_val) if ik_val else None
-                if not current_ltp or current_ltp <= 0:
-                    continue
-                stored = float(t['source_stored_ltp'])
-                if stored <= 0:
-                    continue
-                pct = (current_ltp - stored) / stored * 100
-                peak = max(float(t.get('peak_pct') or 0), pct)
-                update_live_price(t['id'], current_ltp, pct, peak)
+        # Resolve instrument_key for every open trade in ONE query, so we only
+        # make a single live-price REST call for the whole open set.
+        open_key_rows = _fetch_all_dicts("""
+            SELECT symbol, strike_price::float AS strike_price, option_type, instrument_key
+            FROM instrument_keys
+            WHERE (symbol, strike_price, option_type) IN (
+                SELECT DISTINCT source_symbol, source_strike_price, source_option_type
+                FROM paper_trades WHERE status = 'OPEN'
+            )
+        """)
+        open_ik = {
+            (r['symbol'], r['strike_price'], r['option_type']): r['instrument_key']
+            for r in open_key_rows if r.get('instrument_key')
+        }
+        open_keys_to_fetch = list(open_ik.values())
+        open_ltp_map = fetch_live_ltp(open_keys_to_fetch) if open_keys_to_fetch else {}
 
-                # EXIT: profit at 47-50%
-                if EXIT_PCT_MIN <= pct <= EXIT_PCT_MAX:
-                    exit_paper_trade(t['id'], current_ltp, 'PROFIT', stored, pct)
-                # EXIT: stop loss at -90%
-                elif pct <= STOP_LOSS_PCT:
-                    exit_paper_trade(t['id'], current_ltp, 'LOSS', stored, pct)
-                # EXIT: if it spiked past 50% (caught on subsequent poll)
-                elif pct > EXIT_PCT_MAX:
-                    exit_paper_trade(t['id'], current_ltp, 'PROFIT', stored, pct)
+        for t in open_trades:
+            sym, strike, opt = t['source_symbol'], float(t['source_strike_price']), t['source_option_type']
+            ik_val = open_ik.get((sym, strike, opt))
+            current_ltp = open_ltp_map.get(ik_val) if ik_val else None
+            if not current_ltp or current_ltp <= 0:
+                continue
+            stored = float(t['source_stored_ltp'])
+            if stored <= 0:
+                continue
+            pct = (current_ltp - stored) / stored * 100
+            peak = max(float(t.get('peak_pct') or 0), pct)
+            update_live_price(t['id'], current_ltp, pct, peak)
+
+            # EXIT: profit at 47-50%
+            if EXIT_PCT_MIN <= pct <= EXIT_PCT_MAX:
+                exit_paper_trade(t['id'], current_ltp, 'PROFIT', stored, pct)
+            # EXIT: stop loss at -90%
+            elif pct <= STOP_LOSS_PCT:
+                exit_paper_trade(t['id'], current_ltp, 'LOSS', stored, pct)
+            # EXIT: if it spiked past 50% (caught on subsequent poll)
+            elif pct > EXIT_PCT_MAX:
+                exit_paper_trade(t['id'], current_ltp, 'PROFIT', stored, pct)
 
 
 def main():
