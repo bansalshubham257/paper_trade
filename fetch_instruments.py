@@ -64,21 +64,14 @@ def fetch_for_expiry(df, configured):
     if month_rows.empty:
         return pd.DataFrame()
 
-    # FNO stock set = base symbols of all stock futures/options for the expiry month
+    # FNO stock/index set derived from base symbols of the expiry-month instruments
     stock_symbols = set()
     for ts in month_rows["tradingsymbol"]:
         bs = base_symbol(ts)
         if bs:
             stock_symbols.add(bs)
-    print(f"Derived {len(stock_symbols)} F&O symbols (stocks + indices)")
 
-    equity_df = pd.DataFrame()
-    eq_all = df[(df["exchange"] == "NSE_EQ")].copy()
-    eq_all["_sym"] = eq_all["tradingsymbol"].astype(str)
-    equity_df = eq_all[eq_all["_sym"].isin(stock_symbols)]
-    print(f"NSE_EQ equities for F&O stocks: {len(equity_df)}")
-
-    return month_rows, equity_df, stock_symbols
+    return month_rows
 
 
 def upsert_instruments(rows):
@@ -133,16 +126,13 @@ def main():
     print(f"Configured expiry: {configured.date()} (month {configured.year:04d}-{configured.month:02d})")
 
     df = download_instruments()
-    month_rows, equity_df, _stock_symbols = fetch_for_expiry(df, configured)
+    month_rows = fetch_for_expiry(df, configured)
 
     if month_rows.empty:
         print("No NSE_FO instruments found for configured expiry month")
         sys.exit(1)
 
-    total = 0
-    total += upsert_instruments(month_rows)
-    if not equity_df.empty:
-        total += upsert_instruments(equity_df)
+    total = upsert_instruments(month_rows)
 
     print(f"Total instrument rows upserted: {total}")
     print("Instrument fetch complete")
