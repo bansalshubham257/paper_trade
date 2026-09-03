@@ -43,7 +43,18 @@ export default defineRailway(() => {
     },
   });
 
+  const instruments = fn("instruments", {
+    source: github("bansalshubham257/paper_trade", { branch: "master" }),
+    start: "python fetch_instruments.py",
+    deploy: {
+      cronSchedule: "0 2 * * *",
+    },
+    env: {
+      DATABASE_URL: db.env.DATABASE_URL,
+    },
+  });
+
   return project("paper-trade", {
-    resources: [db, feed, worker, paperTrader, selenium, token],
+    resources: [db, feed, worker, paperTrader, selenium, token, instruments],
   });
 });
