@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Fetch NFO instruments (stock options, index options, stock/index futures, and
-FNO equities) from the Upstox BOD master-contract CSV and populate the
-instrument_keys table.
+Fetch NFO instruments into the instrument_keys table using the same universe
+logic as the original option_chain._process_option_chain_data():
+for each FNO stock, select the 3 strikes at or below spot (ATM) and the 3
+strikes at or above spot, then keep the CE + PE for those selected strikes
+(6 CE + 6 PE per stock approx).
 
-Ports the coverage of the original option_chain.fetch_instrument_keys() (app.py):
-  - OPTSTK (stock options), OPTIDX (index options)
-  - FUTSTK (stock futures), FUTIDX (index futures)
-  - NSE_EQ equities for all F&O stocks
-for the configured expiry month (config.INSTRUMENT_EXPIRIES / EXPIRY_DATE).
-
-Designed to run daily before the market opens alongside the token cron.
+Spot proxy: the previous close of the corresponding NSE_EQ equity (falling back
+to the FUTSTK prev_close when the equity row is absent).
 """
 
 import sys
@@ -26,8 +23,7 @@ from services.database import DatabaseService
 db = DatabaseService()
 
 URL_COMPLETE = "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
-FUT_TYPES = {"FUTSTK", "FUTIDX"}
-OPT_TYPES = {"OPTSTK", "OPTIDX"}
+NUM_STRIKES = 3
 
 
 def get_configured_expiry():
@@ -53,25 +49,83 @@ def base_symbol(tradingsymbol):
     return m.group(0) if m else None
 
 
-def fetch_for_expiry(df, configured):
+def build_spot_map(df):
+    spot = {}
+    eq = df[df["exchange"] == "NSE_EQ"].copy()
+    for _, row in eq.iterrows():
+        ts = str(row.get("tradingsymbol", "")).strip()
+        bs = base_symbol(ts)
+        if not bs:
+            continue
+        pc = row.get("last_price")
+        pc = float(pc) if pc is not None and not pd.isna(pc) else None
+        if pc and bs not in spot:
+            spot[bs] = pc
+    fut = df[(df["exchange"] == "NSE_FO") & (df["instrument_type"] == "FUTSTK")].copy()
+    for _, row in fut.iterrows():
+        ts = str(row.get("tradingsymbol", "")).strip()
+        bs = base_symbol(ts)
+        if not bs or bs in spot:
+            continue
+        pc = row.get("last_price")
+        pc = float(pc) if pc is not None and not pd.isna(pc) else None
+        if pc:
+            spot[bs] = pc
+    return spot
+
+
+def fetch_universe(df, configured):
     target_month = f"{configured.year:04d}-{configured.month:02d}"
     fo = df[df["exchange"] == "NSE_FO"].copy()
     fo["_expiry_dt"] = pd.to_datetime(fo["expiry"], errors="coerce")
     fo["_expiry_month"] = fo["_expiry_dt"].dt.strftime("%Y-%m")
-    month_rows = fo[fo["_expiry_month"] == target_month]
-    print(f"NSE_FO instruments in {target_month}: {len(month_rows)}")
-
+    month_rows = fo[fo["_expiry_month"] == target_month].copy()
     if month_rows.empty:
+        print(f"NSE_FO instruments in {target_month}: 0")
         return pd.DataFrame()
 
-    # FNO stock/index set derived from base symbols of the expiry-month instruments
-    stock_symbols = set()
-    for ts in month_rows["tradingsymbol"]:
-        bs = base_symbol(ts)
-        if bs:
-            stock_symbols.add(bs)
+    stock_opts = month_rows[month_rows["instrument_type"] == "OPTSTK"].copy()
+    print(f"NSE_FO OPTSTK in {target_month}: {len(stock_opts)}")
+    if stock_opts.empty:
+        return pd.DataFrame()
 
-    return month_rows
+    spot_map = build_spot_map(df)
+    print(f"Spot prices available for {len(spot_map)} stocks")
+
+    selected = []
+    stocks_count = 0
+    for bs, grp in stock_opts.groupby(stock_opts["tradingsymbol"].map(base_symbol)):
+        if not bs:
+            continue
+        spot = spot_map.get(bs)
+        if not spot:
+            print(f"Skipping {bs}: no spot price")
+            continue
+        grp = grp.copy()
+        grp["_strike"] = grp["strike"].astype(float)
+        strikes = sorted(grp["_strike"].unique())
+        if not strikes:
+            print(f"Skipping {bs}: no strikes")
+            continue
+        below = [s for s in strikes if s <= spot][-NUM_STRIKES:]
+        above = [s for s in strikes if s >= spot][:NUM_STRIKES]
+        closest_strikes = sorted(set(below + above))
+        if len(closest_strikes) < min(NUM_STRIKES * 2, len(strikes)):
+            ordered = sorted(strikes, key=lambda s: abs(s - spot))
+            closest_strikes = sorted(ordered[:NUM_STRIKES * 2])
+        sel = grp[grp["_strike"].isin(closest_strikes)]
+        if not sel.empty:
+            selected.append(sel)
+            stocks_count += 1
+
+    if not selected:
+        print("No stocks selected")
+        return pd.DataFrame()
+
+    result = pd.concat(selected)
+    print(f"Selected {len(result)} OPTSTK option rows across {stocks_count} stocks "
+          f"({NUM_STRIKES} CE + {NUM_STRIKES} PE ATM strikes each)")
+    return result
 
 
 def upsert_instruments(rows):
@@ -83,7 +137,6 @@ def upsert_instruments(rows):
             tradingsymbol = str(row.get("tradingsymbol", "")).strip()
             if not instrument_key or not tradingsymbol:
                 continue
-
             symbol = base_symbol(tradingsymbol) or tradingsymbol
             lot_size = row.get("lot_size")
             lot_size = int(lot_size) if lot_size is not None and not pd.isna(lot_size) else None
@@ -98,7 +151,6 @@ def upsert_instruments(rows):
             instrument_type = str(row.get("instrument_type", "")).strip().upper()
             prev_close = row.get("last_price")
             prev_close = float(prev_close) if prev_close is not None and not pd.isna(prev_close) else None
-
             db.upsert_instrument_key(
                 symbol=symbol,
                 instrument_key=instrument_key,
@@ -116,24 +168,28 @@ def upsert_instruments(rows):
             errors += 1
             if errors <= 5:
                 print(f"Error inserting {row.get('tradingsymbol', '?')}: {e}")
-
     print(f"Upserted {inserted} instruments, {errors} errors")
     return inserted
+
+
+def clear_instrument_keys():
+    try:
+        db.clear_old_data()
+        print("Cleared existing instrument_keys")
+    except Exception as e:
+        print(f"Error clearing instrument_keys: {e}")
 
 
 def main():
     configured = get_configured_expiry()
     print(f"Configured expiry: {configured.date()} (month {configured.year:04d}-{configured.month:02d})")
-
     df = download_instruments()
-    month_rows = fetch_for_expiry(df, configured)
-
-    if month_rows.empty:
-        print("No NSE_FO instruments found for configured expiry month")
+    rows = fetch_universe(df, configured)
+    if rows.empty:
+        print("No option instruments selected for configured expiry month")
         sys.exit(1)
-
-    total = upsert_instruments(month_rows)
-
+    clear_instrument_keys()
+    total = upsert_instruments(rows)
     print(f"Total instrument rows upserted: {total}")
     print("Instrument fetch complete")
 
