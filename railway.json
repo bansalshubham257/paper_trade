@@ -1,0 +1,6 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "buildCommand": "if [ \"$INSTALL_PLAYWRIGHT\" = \"1\" ]; then python -m playwright install --with-deps chromium; fi"
+  }
+}

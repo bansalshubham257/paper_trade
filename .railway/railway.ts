@@ -29,12 +29,13 @@ export default defineRailway(() => {
 
   const token = fn("token", {
     source: github("bansalshubham257/paper_trade", { branch: "master" }),
-    start: "sh -c 'python -m playwright install --with-deps chromium && python generate_token.py'",
+    start: "python generate_token.py",
     deploy: {
       cronSchedule: "30 1 * * *",
     },
     env: {
       DATABASE_URL: db.env.DATABASE_URL,
+      INSTALL_PLAYWRIGHT: "1",
     },
   });
 
