@@ -8,14 +8,6 @@ from urllib.parse import parse_qs, urlparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 import time
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
-
 class UpstoxAuth:
     """
     Utility class for Upstox authentication.
@@ -327,14 +319,17 @@ def manual_auth_flow(api_key, secret, totp_secret, redirect_uri):
 def fully_automated_auth_flow(api_key, secret, totp_secret, redirect_uri,
                               headless=True, username=None, password=None):
     """
-    Run a fully automated authentication flow with Selenium.
+    Run a fully automated authentication flow with Playwright (on-demand chromium).
+
+    Playwright launches a headless chromium only for the duration of this call,
+    then shuts it down - avoiding the cost of a 24/7 Selenium/Chrome service.
 
     Args:
         api_key (str): Upstox API key
         secret (str): Upstox API secret
         totp_secret (str): TOTP secret for 2FA
         redirect_uri (str): Redirect URI registered with Upstox
-        headless (bool): Whether to run browser in headless mode (default: False for debugging)
+        headless (bool): Whether to run browser in headless mode
         username (str): Upstox username/mobile number
         password (str): Upstox password
 
@@ -353,194 +348,95 @@ def fully_automated_auth_flow(api_key, secret, totp_secret, redirect_uri,
     auth_url = auth.get_auth_url()
     totp_code = auth.generate_totp()
 
-    print("\n=== Upstox Fully Automated Authentication Flow ===")
-    print(f"\nConfiguring automated browser for Upstox login...")
+    print("\n=== Upstox Fully Automated Authentication Flow (Playwright) ===")
+    print("Launching on-demand headless Chromium...")
 
     try:
-        # Set up Chrome options
-        options = webdriver.ChromeOptions()
-        if headless:
-            print("Using headless browser mode")
-            options.add_argument('--headless=new')  # Updated headless syntax for newer Chrome
-            options.add_argument('--disable-extensions')
-        else:
-            print("Using visible browser mode for debugging")
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        print(f"ERROR: Playwright not available: {e}")
+        if 'server' in locals() and server:
+            auth.stop_auth_server(server)
+        return None
 
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    page = None
+    p = None
+    try:
+        p = sync_playwright().start()
+        browser = p.chromium.launch(
+            headless=headless,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+            ],
+        )
+        page = browser.new_page(
+            user_agent=('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/120.0.0.0 Safari/537.36')
+        )
 
-        try:
-            # Initialize browser with Service object from ChromeDriverManager
-            print("Launching browser...")
-            selenium_url = os.getenv("SELENIUM_URL", "standalone-chrome-production-121b.up.railway.app")
-            if selenium_url and not selenium_url.startswith("http://") and not selenium_url.startswith("https://"):
-                selenium_url = f"http://{selenium_url}:4444/wd/hub"
-            print(f"Connecting to Selenium at: {selenium_url}")
-            #service = Service(ChromeDriverManager().install())
-            driver = webdriver.Remote(command_executor=selenium_url, options=options)
-        except Exception as browser_error:
-            print(f"Error initializing Chrome webdriver: {str(browser_error)}")
-            print("Trying alternative initialization method...")
-            # Try alternative initialization method
-            driver = webdriver.Chrome(options=options)
-
-        # Maximize window for better interaction
-        driver.maximize_window()
-
-        # Set wait timeout
-        wait = WebDriverWait(driver, 30)  # Increased timeout for better reliability
-
-        # Navigate to auth URL
-        print(f"Navigating to Upstox authorization page...")
-        driver.get(auth_url)
-
-        # Small delay to ensure page loads properly
-        time.sleep(2)
+        print("Navigating to Upstox authorization page...")
+        page.goto(auth_url, timeout=60000)
 
         # Check if we need username/password
         if username and password:
             try:
-                # Handle login form - STEP 1: Enter mobile number/username
+                # STEP 1: Enter mobile number/username
                 print("Entering username/mobile number...")
+                username_field = page.wait_for_selector("#mobileNum", timeout=30000)
+                username_field.fill(username)
+                print("Username entered successfully")
 
-                # Wait for username field and enter username
-                try:
-                    username_field = wait.until(EC.element_to_be_clickable((By.ID, "mobileNum")))
-                    username_field.clear()
-                    username_field.send_keys(username)
-                    print("Username entered successfully")
-                except Exception as e:
-                    print(f"Error entering username: {str(e)}")
-                    print("Trying alternative element...")
-                    try:
-                        username_field = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@placeholder='Mobile Number']")))
-                        username_field.clear()
-                        username_field.send_keys(username)
-                        print("Username entered using alternative selector")
-                    except Exception as alt_e:
-                        print(f"Alternative username entry also failed: {str(alt_e)}")
-                        print("Taking screenshot to diagnose the issue...")
-                        driver.save_screenshot("login_page.png")
-                        print(f"Screenshot saved to login_page.png")
-                        print(f"Current URL: {driver.current_url}")
-                        print(f"Page source excerpt: {driver.page_source[:1000]}")
-                        raise
+                # Click continue after username
+                page.wait_for_selector("#getOtp", state="attached", timeout=30000)
+                page.click("#getOtp")
+                print("Clicked continue after username")
+            except Exception as e:
+                print(f"Error in username step: {str(e)}")
 
-                # Find and click continue button
-                try:
-                    continue_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='getOtp']")))
-                    continue_button.click()
-                    print("Clicked continue after username")
-                except Exception as e:
-                    print(f"Error clicking continue button: {str(e)}")
-                    print("Trying alternative button...")
-                    try:
-                        continue_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']")))
-                        continue_button.click()
-                        print("Clicked continue using alternative selector")
-                    except Exception as alt_e:
-                        print(f"Alternative continue button click also failed: {str(alt_e)}")
-                        driver.save_screenshot("continue_button.png")
-                        print(f"Screenshot saved to continue_button.png")
-                        raise
+            # Small delay to ensure the OTP page loads
+            page.wait_for_timeout(2000)
 
-                # Small delay to ensure next page loads
-                time.sleep(2)
-
-                # STEP 2: Enter TOTP from the authenticator app
+            # STEP 2: Enter TOTP from the authenticator app
+            try:
                 print(f"Entering TOTP code: {totp_code}")
-                try:
-                    totp_field = wait.until(EC.element_to_be_clickable((By.ID, "otpNum")))
-                    totp_field.clear()
-                    totp_field.send_keys(totp_code)
-                    print("TOTP entered successfully")
-                except Exception as e:
-                    print(f"Error entering TOTP: {str(e)}")
-                    print("Trying alternative element...")
-                    try:
-                        totp_field = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='text' and @inputmode='numeric']")))
-                        totp_field.clear()
-                        totp_field.send_keys(totp_code)
-                        print("TOTP entered using alternative selector")
-                    except Exception as alt_e:
-                        print(f"Alternative TOTP entry also failed: {str(alt_e)}")
-                        driver.save_screenshot("totp_page.png")
-                        print(f"Screenshot saved to totp_page.png")
-                        print(f"Current URL: {driver.current_url}")
-                        raise
+                totp_field = page.wait_for_selector("#otpNum", timeout=30000)
+                totp_field.fill(totp_code)
+                print("TOTP entered successfully")
 
-                try:
-                    signin_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[@id='continueBtn']")))
-                    signin_button.click()
-                    print("Clicked sign in button")
-                except Exception as e:
-                    print(f"Error clicking sign in button: {str(e)}")
-                    print("Trying alternative button...")
-                    try:
-                        signin_button = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@type='submit']")))
-                        signin_button.click()
-                        print("Clicked sign in using alternative selector")
-                    except Exception as alt_e:
-                        print(f"Alternative sign in button click also failed: {str(alt_e)}")
-                        driver.save_screenshot("signin_button.png")
-                        print(f"Screenshot saved to signin_button.png")
-                        raise
+                page.wait_for_selector("#continueBtn", state="attached", timeout=30000)
+                page.click("#continueBtn")
+                print("Clicked sign in button")
+            except Exception as e:
+                print(f"Error in TOTP step: {str(e)}")
 
-                print("Login credentials submitted successfully")
+            # STEP 3: Enter password/PIN
+            try:
+                password_field = page.wait_for_selector("#pinCode", timeout=30000)
+                password_field.fill(password)
+                page.wait_for_timeout(2000)
+                page.wait_for_selector("#pinContinueBtn", state="attached", timeout=30000)
+                page.click("#pinContinueBtn")
+                print("Password entered successfully")
+            except Exception as e:
+                print(f"Error in PIN step: {str(e)}")
 
-                # Wait for password field and enter password
-                try:
-                    password_field = wait.until(EC.element_to_be_clickable((By.ID, "pinCode")))
-                    password_field.clear()
-                    password_field.send_keys(password)
-                    time.sleep(2)
-                    signin_button = wait.until(EC.element_to_be_clickable((By.ID, "pinContinueBtn")))
-                    signin_button.click()
-                    print("Password entered successfully....")
-
-                except Exception as e:
-                    print(f"Error entering password: {str(e)}")
-                    print("Trying alternative element...")
-                    try:
-                        password_field = wait.until(EC.element_to_be_clickable((By.ID, "pinCode")))
-                        password_field.clear()
-                        password_field.send_keys(password)
-                        time.sleep(2)
-                        signin_button = wait.until(EC.element_to_be_clickable((By.ID, "pinContinueBtn")))
-                        signin_button.click()
-                        print("Password entered using alternative selector")
-                    except Exception as alt_e:
-                        print(f"Alternative password entry also failed: {str(alt_e)}")
-                        driver.save_screenshot("password_page.png")
-                        print(f"Screenshot saved to password_page.png")
-                        raise
-
-                # Find and click sign in button
-
-            except Exception as login_error:
-                print(f"Error during login process: {str(login_error)}")
-                driver.save_screenshot("login_error.png")
-                print(f"Screenshot saved to login_error.png")
-                print(f"Current URL: {driver.current_url}")
-                print("Continuing with authentication flow despite login error...")
+            print("Login credentials submitted successfully")
+            page.wait_for_timeout(3000)
         else:
             print("No credentials provided. Waiting for manual login...")
-            # Wait for 30 seconds to allow manual login
-            time.sleep(30)
+            page.wait_for_timeout(30000)
 
-        time.sleep(10)
-
-
-        # Wait for auth_code to be set by the server (with timeout)
+        # Wait for the redirect URL containing the authorization code
         timeout = 120  # 2 minutes timeout
         start_time = time.time()
         auth_code = None
 
         while time.time() - start_time < timeout:
-            current_url = driver.current_url
+            current_url = page.url
             if 'code=' in current_url:
                 # Parse the code from URL
                 parsed = urlparse(current_url)
@@ -548,17 +444,23 @@ def fully_automated_auth_flow(api_key, secret, totp_secret, redirect_uri,
                 auth_code = params['code'][0]
                 print(f"\nAuthorization code received: {auth_code}")
                 break
-            time.sleep(1)
+            page.wait_for_timeout(1000)
         else:
             print("Authentication timed out. Please try again.")
-            driver.save_screenshot("timeout_error.png")
-            print(f"Screenshot saved to timeout_error.png")
-            print(f"Final URL: {driver.current_url}")
-            driver.quit()
+            try:
+                page.screenshot(path="timeout_error.png")
+                print(f"Screenshot saved to timeout_error.png")
+            except Exception as se:
+                print(f"Failed to save timeout screenshot: {se}")
+            print(f"Final URL: {page.url}")
+            browser.close()
+            p.stop()
+            auth.stop_auth_server(server)
             return None
 
-        # Close the browser
-        driver.quit()
+        # Close the browser (released on-demand - no 24/7 cost)
+        browser.close()
+        p.stop()
 
         # Stop the server
         auth.stop_auth_server(server)
@@ -569,7 +471,7 @@ def fully_automated_auth_flow(api_key, secret, totp_secret, redirect_uri,
             print("\nAuthentication successful!")
             access_token = token_data['access_token']
 
-            # Verify the token (optional — may be skipped if static IP is not configured)
+            # Verify the token (optional - may be skipped if static IP is not configured)
             user_data = auth.verify_token(access_token)
             if user_data and 'data' in user_data:
                 print(f"\nLogged in as: {user_data.get('data', {}).get('user_name', 'Unknown')}")
@@ -589,19 +491,21 @@ def fully_automated_auth_flow(api_key, secret, totp_secret, redirect_uri,
     except Exception as e:
         print(f"Error in automated authentication: {str(e)}")
         try:
-            if 'driver' in locals() and driver:
-                driver.save_screenshot("error_screenshot.png")
+            if page is not None:
+                page.screenshot(path="error_screenshot.png")
                 print(f"Error screenshot saved to error_screenshot.png")
-                print(f"Current URL at error: {driver.current_url}")
+                print(f"Current URL at error: {page.url}")
         except Exception as screenshot_error:
             print(f"Failed to take error screenshot: {str(screenshot_error)}")
 
         if 'server' in locals() and server:
             auth.stop_auth_server(server)
-        if 'driver' in locals() and driver:
-            driver.quit()
+        if p is not None:
+            try:
+                p.stop()
+            except Exception:
+                pass
         return None
-
 if __name__ == "__main__":
     # This will be executed when running this file directly
     # Import credentials from config if available, otherwise use placeholders

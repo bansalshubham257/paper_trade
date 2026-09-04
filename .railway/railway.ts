@@ -1,4 +1,4 @@
-import { defineRailway, github, image, project, service, fn, postgres } from "railway/iac";
+import { defineRailway, github, project, service, fn, postgres } from "railway/iac";
 
 export default defineRailway(() => {
   const db = postgres("postgres");
@@ -27,19 +27,14 @@ export default defineRailway(() => {
     },
   });
 
-  const selenium = service("selenium", {
-    source: image("selenium/standalone-chrome:latest"),
-  });
-
   const token = fn("token", {
     source: github("bansalshubham257/paper_trade", { branch: "master" }),
-    start: "python generate_token.py",
+    start: "sh -c 'python -m playwright install --with-deps chromium && python generate_token.py'",
     deploy: {
       cronSchedule: "30 1 * * *",
     },
     env: {
       DATABASE_URL: db.env.DATABASE_URL,
-      SELENIUM_URL: selenium.env.RAILWAY_PRIVATE_DOMAIN,
     },
   });
 
@@ -55,6 +50,6 @@ export default defineRailway(() => {
   });
 
   return project("paper-trade", {
-    resources: [db, feed, worker, paperTrader, selenium, token, instruments],
+    resources: [db, feed, worker, paperTrader, token, instruments],
   });
 });
